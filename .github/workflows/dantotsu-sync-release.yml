@@ -37,39 +37,17 @@ jobs:
           eval $(ssh-agent -s)
           echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> $GITHUB_ENV
           echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> $GITHUB_ENV
-
-          add_key_with_retry() {
-            for attempt in 1 2 3; do
-              if expect <<EOF
-                spawn ssh-add /home/runner/.ssh/forgejo_key
-                expect "Enter passphrase"
-                send "$PASSPHRASE\r"
-                expect eof
-              EOF
-              then
-                return 0
-              fi
-              echo "ssh-add failed (attempt ${attempt}/3). Retrying in 5s..."
-              sleep 5
-            done
-            return 1
-          }
-
-          add_key_with_retry
+          
+          expect <<EOF
+            spawn ssh-add /home/runner/.ssh/forgejo_key
+            expect "Enter passphrase"
+            send "$PASSPHRASE\r"
+            expect eof
+          EOF
 
       - name: Setup SSH Config
         run: |
-          for attempt in 1 2 3; do
-            if ssh-keyscan -p 2222 gitssh.rebelonion.dev >> ~/.ssh/known_hosts; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "ssh-keyscan failed after 3 attempts"
-              exit 1
-            fi
-            echo "ssh-keyscan failed (attempt ${attempt}/3). Retrying in 5s..."
-            sleep 5
-          done
+          ssh-keyscan -p 2222 gitssh.rebelonion.dev >> ~/.ssh/known_hosts
           cat <<EOF > ~/.ssh/config
           Host gitssh.rebelonion.dev
             HostName gitssh.rebelonion.dev
@@ -81,56 +59,19 @@ jobs:
 
       - name: Checkout Repository
         run: |
-          for attempt in 1 2 3; do
-            if git clone --depth 1 --branch dev gitssh.rebelonion.dev:rebelonion/Dantotsu.git .; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "git clone failed after 3 attempts"
-              exit 1
-            fi
-            echo "git clone failed (attempt ${attempt}/3). Retrying in 5s..."
-            sleep 5
-          done
+          git clone --depth 1 --branch dev gitssh.rebelonion.dev:rebelonion/Dantotsu.git .
 
       - name: Download last SHA from latest release
         id: download-last-sha
         run: |
-          SHA_STATUS="failed"
-
-          for attempt in 1 2 3; do
-            LATEST_RELEASE=$(curl -sS -f https://api.github.com/repos/itsmechinmoy/dantotsu-updater/releases/latest) && break
-            if [ "$attempt" -eq 3 ]; then
-              echo "Unable to fetch latest release after 3 attempts"
-              echo "SHA_STATUS=${SHA_STATUS}" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-            echo "Release API request failed (attempt ${attempt}/3). Retrying in 5s..."
-            sleep 5
-          done
-
-          SHA_URL=$(echo "$LATEST_RELEASE" | jq -r '.assets[]? | select(.name == "last_sha.txt") | .browser_download_url')
+          LATEST_RELEASE=$(curl -s https://api.github.com/repos/itsmechinmoy/dantotsu-updater/releases/latest)
+          SHA_URL=$(echo "$LATEST_RELEASE" | jq -r '.assets[] | select(.name == "last_sha.txt") | .browser_download_url')
           if [ -n "$SHA_URL" ]; then
-            for attempt in 1 2 3; do
-              if curl -sSLf "$SHA_URL" -o last_sha.txt && grep -Eq '^[0-9a-f]{40}$' last_sha.txt; then
-                SHA_STATUS="downloaded"
-                echo "Downloaded valid last SHA from release"
-                break
-              fi
-              rm -f last_sha.txt
-              if [ "$attempt" -eq 3 ]; then
-                echo "last_sha.txt download/validation failed after 3 attempts"
-                break
-              fi
-              echo "last_sha.txt download/validation failed (attempt ${attempt}/3). Retrying in 5s..."
-              sleep 5
-            done
+            curl -sL "$SHA_URL" -o last_sha.txt
+            echo "Downloaded last SHA from release"
           else
-            SHA_STATUS="missing"
             echo "No last_sha.txt found in latest release"
           fi
-
-          echo "SHA_STATUS=${SHA_STATUS}" >> $GITHUB_OUTPUT
         continue-on-error: true
 
       - name: Check for updates
@@ -138,7 +79,6 @@ jobs:
         run: |
           LATEST_SHA=$(git rev-parse HEAD)
           echo "LATEST_SHA=${LATEST_SHA}" >> $GITHUB_OUTPUT
-          SHA_STATUS="${{ steps.download-last-sha.outputs.SHA_STATUS }}"
           if [ -f last_sha.txt ]; then
             LAST_SHA=$(cat last_sha.txt)
             echo "LAST_SHA=${LAST_SHA}" >> $GITHUB_OUTPUT
@@ -146,20 +86,11 @@ jobs:
           else
             LAST_SHA=""
             echo "LAST_SHA=" >> $GITHUB_OUTPUT
-            echo "No previous SHA file found. SHA_STATUS=${SHA_STATUS}"
+            echo "No previous SHA found. First run detected."
           fi
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] || [ "$LATEST_SHA" != "$LAST_SHA" ]; then
             echo "SHOULD_RUN=true" >> $GITHUB_OUTPUT
             echo "$LATEST_SHA" > last_sha.txt
-          elif [ -f last_sha.txt ] && [ "$LATEST_SHA" != "$LAST_SHA" ]; then
-            echo "SHOULD_RUN=true" >> $GITHUB_OUTPUT
-            echo "$LATEST_SHA" > last_sha.txt
-          elif [ "$SHA_STATUS" = "missing" ]; then
-            echo "SHOULD_RUN=true" >> $GITHUB_OUTPUT
-            echo "$LATEST_SHA" > last_sha.txt
-          elif [ "$SHA_STATUS" = "failed" ]; then
-            echo "Skipping run because last SHA lookup failed. This avoids duplicate releases."
-            echo "SHOULD_RUN=false" >> $GITHUB_OUTPUT
           else
             echo "SHOULD_RUN=false" >> $GITHUB_OUTPUT
           fi
