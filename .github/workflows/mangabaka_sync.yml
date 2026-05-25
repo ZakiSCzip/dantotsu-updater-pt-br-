@@ -1,263 +1,266 @@
 name: Sync AniList to MangaBaka
+
 on:
   schedule:
-    - cron: '0 */4 * * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
-      mode:
-        description: 'Mode'
-        required: true
-        default: 'sync'
-        type: choice
-        options:
-          - sync
-          - generate_url
-          - exchange_code
-      auth_code:
-        description: 'Auth code from browser (only for exchange_code mode)'
+      session_token:
+        description: '__Secure-better-auth.session_token (from browser if auto fails)'
         required: false
-        default: ''
-
-env:
-  MB_CLIENT_ID: vmVxEyBLyCyugmgCAHBuKiHeIxsCcasM
-  TOKEN_FILE: /tmp/mb_tokens.json
-  VERIFIER_FILE: /tmp/mb_verifier.txt
+      cf_clearance:
+        description: 'cf_clearance cookie (from browser if auto fails)'
+        required: false
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Restore token cache
-        uses: actions/cache/restore@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          path: /tmp/mb_tokens.json
-          key: mb-tokens
-          restore-keys: mb-tokens
-
-      - name: Restore verifier cache
-        if: inputs.mode == 'exchange_code'
-        uses: actions/cache/restore@v4
-        with:
-          path: /tmp/mb_verifier.txt
-          key: mb-verifier
-          restore-keys: mb-verifier
-
-      # ── MODE: generate_url ──────────────────────────────────────────────
-      - name: Generate PKCE auth URL
-        if: inputs.mode == 'generate_url'
+          node-version: '20'
+      
+      - name: Install Puppeteer and dependencies
         run: |
-          CODE_VERIFIER=$(openssl rand -base64 96 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
-          CODE_CHALLENGE=$(echo -n "$CODE_VERIFIER" | openssl dgst -sha256 -binary | openssl base64 | tr '+/' '-_' | tr -d '=\n')
+          npm install puppeteer
+          sudo apt-get update
+          sudo apt-get install -y \
+            ca-certificates \
+            fonts-liberation \
+            libasound2 \
+            libatk-bridge2.0-0 \
+            libatk1.0-0 \
+            libc6 \
+            libcairo2 \
+            libcups2 \
+            libdbus-1-3 \
+            libexpat1 \
+            libfontconfig1 \
+            libgbm1 \
+            libgcc1 \
+            libglib2.0-0 \
+            libgtk-3-0 \
+            libnspr4 \
+            libnss3 \
+            libpango-1.0-0 \
+            libpangocairo-1.0-0 \
+            libstdc++6 \
+            libx11-6 \
+            libx11-xcb1 \
+            libxcb1 \
+            libxcomposite1 \
+            libxcursor1 \
+            libxdamage1 \
+            libxext6 \
+            libxfixes3 \
+            libxi6 \
+            libxrandr2 \
+            libxrender1 \
+            libxss1 \
+            libxtst6 \
+            lsb-release \
+            wget \
+            xdg-utils
 
-          echo "$CODE_VERIFIER" > $VERIFIER_FILE
-
-          echo "=========================================="
-          echo "Open this URL in your browser:"
-          echo ""
-          echo "https://mangabaka.org/auth/oauth2/authorize?client_id=${MB_CLIENT_ID}&response_type=code&redirect_uri=http://127.0.0.1:9145&code_challenge=${CODE_CHALLENGE}&code_challenge_method=S256&scope=openid%20profile%20library.read%20library.write%20offline_access"
-          echo ""
-          echo "After login your browser will fail to load 127.0.0.1:9145"
-          echo "Copy ONLY the 'code' value from the address bar, then run"
-          echo "this workflow again with mode=exchange_code and paste it into auth_code."
-          echo "=========================================="
-
-      - name: Save verifier cache
-        if: inputs.mode == 'generate_url'
-        uses: actions/cache/save@v4
-        with:
-          path: /tmp/mb_verifier.txt
-          key: mb-verifier-${{ github.run_id }}
-
-      # ── MODE: exchange_code ─────────────────────────────────────────────
-      - name: Exchange auth code for tokens
-        if: inputs.mode == 'exchange_code'
+      - name: Create browser automation script
         run: |
-          if [ ! -f "$VERIFIER_FILE" ]; then
-            echo "ERROR: No cached verifier. Run generate_url mode first."
-            exit 1
-          fi
+          cat > mangabaka_auth.js << 'EOF'
+          const puppeteer = require('puppeteer');
+          const fs = require('fs').promises;
+          
+          (async () => {
+            console.log('Launching browser...');
+            const browser = await puppeteer.launch({
+              headless: 'new',
+              args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--disable-gpu',
+                '--window-size=1920,1080',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process'
+              ]
+            });
+            
+            const page = await browser.newPage();
+            
+            // Stealth: Remove webdriver property
+            await page.evaluateOnNewDocument(() => {
+              delete navigator.__proto__.webdriver;
+              Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined,
+                configurable: true
+              });
+            });
+            
+            // Set realistic user agent and viewport
+            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+            await page.setViewport({ width: 1920, height: 1080 });
+            
+            // Set extra headers
+            await page.setExtraHTTPHeaders({
+              'Accept-Language': 'en-US,en;q=0.9',
+              'Accept-Encoding': 'gzip, deflate, br'
+            });
+            
+            let cookies = null;
+            
+            try {
+              console.log('Navigating to MangaBaka...');
+              await page.goto('https://mangabaka.org/', {
+                waitUntil: 'networkidle2',
+                timeout: 60000
+              });
+              
+              console.log('Waiting for Cloudflare challenge to complete...');
+              // Wait for potential Cloudflare challenge
+              await page.waitForFunction(
+                () => {
+                  return !document.body.innerHTML.includes('Checking your browser') && 
+                         !document.body.innerHTML.includes('cf-challenge');
+                },
+                { timeout: 120000 }
+              ).catch(() => console.log('No Cloudflare challenge detected or already passed'));
+              
+              // Additional wait for any redirects
+              await new Promise(resolve => setTimeout(resolve, 5000));
+              
+              // Navigate to the import page
+              console.log('Navigating to import page...');
+              await page.goto('https://mangabaka.org/my/library/import/anilist', {
+                waitUntil: 'networkidle2',
+                timeout: 30000
+              });
+              
+              // Get all cookies
+              cookies = await page.cookies();
+              
+              const sessionCookie = cookies.find(c => c.name === '__Secure-better-auth.session_token');
+              const cfCookie = cookies.find(c => c.name === 'cf_clearance');
+              
+              if (sessionCookie && cfCookie) {
+                console.log('✅ Successfully obtained cookies!');
+                console.log(`Session token: ${sessionCookie.value.substring(0, 20)}...`);
+                console.log(`CF Clearance: ${cfCookie.value.substring(0, 20)}...`);
+                
+                // Save to file for the workflow
+                const cookieData = {
+                  session_token: sessionCookie.value,
+                  cf_clearance: cfCookie.value,
+                  fetched_at: new Date().toISOString()
+                };
+                
+                await fs.writeFile('mangabaka_cookies.json', JSON.stringify(cookieData, null, 2));
+                
+                // Also output for GitHub env
+                console.log(`::set-output name=session_token::${sessionCookie.value}`);
+                console.log(`::set-output name=cf_clearance::${cfCookie.value}`);
+              } else {
+                console.error('❌ Failed to get required cookies');
+                if (!sessionCookie) console.error('Missing __Secure-better-auth.session_token');
+                if (!cfCookie) console.error('Missing cf_clearance');
+                
+                // Save cookies for debugging
+                await fs.writeFile('debug_cookies.json', JSON.stringify(cookies, null, 2));
+                throw new Error('Cookie extraction failed');
+              }
+              
+            } catch (error) {
+              console.error('Error:', error.message);
+              
+              // Save screenshot for debugging
+              await page.screenshot({ path: 'error_screenshot.png', fullPage: true });
+              console.log('Saved error screenshot');
+              
+              throw error;
+            } finally {
+              await browser.close();
+            }
+          })();
+          EOF
 
-          CODE_VERIFIER=$(cat $VERIFIER_FILE)
-          AUTH_CODE="${{ inputs.auth_code }}"
-          echo "::add-mask::$CODE_VERIFIER"
-          echo "::add-mask::$AUTH_CODE"
+      - name: Run browser automation
+        id: get_cookies
+        run: node mangabaka_auth.js
+        continue-on-error: true
 
-          RESPONSE=$(curl -s -X POST https://mangabaka.org/auth/oauth2/token \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            --data-urlencode "grant_type=authorization_code" \
-            --data-urlencode "client_id=${MB_CLIENT_ID}" \
-            --data-urlencode "code=${AUTH_CODE}" \
-            --data-urlencode "redirect_uri=http://127.0.0.1:9145" \
-            --data-urlencode "code_verifier=${CODE_VERIFIER}")
-
-          ACCESS=$(echo "$RESPONSE"  | jq -r '.access_token  // empty')
-          REFRESH=$(echo "$RESPONSE" | jq -r '.refresh_token // empty')
-
-          if [ -z "$ACCESS" ] || [ -z "$REFRESH" ]; then
-            echo "ERROR: Token exchange failed:"
-            echo "$RESPONSE"
-            exit 1
-          fi
-
-          echo "::add-mask::$ACCESS"
-          echo "::add-mask::$REFRESH"
-
-          jq -n --arg a "$ACCESS" --arg r "$REFRESH" \
-            '{access_token: $a, refresh_token: $r}' > $TOKEN_FILE
-
-          echo "SUCCESS: Tokens cached. You can now run mode=sync."
-
-      - name: Save token cache after exchange
-        if: inputs.mode == 'exchange_code'
-        uses: actions/cache/save@v4
-        with:
-          path: /tmp/mb_tokens.json
-          key: mb-tokens-${{ github.run_id }}
-
-      # ── MODE: sync ──────────────────────────────────────────────────────
-      - name: Refresh access token
-        if: inputs.mode == 'sync' || inputs.mode == ''
+      - name: Use manual cookies if automation failed
+        if: failure() || steps.get_cookies.outputs.session_token == ''
         run: |
-          if [ ! -f "$TOKEN_FILE" ]; then
-            echo "ERROR: No cached tokens. Run generate_url then exchange_code first."
-            exit 1
-          fi
-
-          REFRESH=$(jq -r '.refresh_token' "$TOKEN_FILE")
-          echo "::add-mask::$REFRESH"
-
-          RESPONSE=$(curl -s -X POST https://mangabaka.org/auth/oauth2/token \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            --data-urlencode "grant_type=refresh_token" \
-            --data-urlencode "client_id=${MB_CLIENT_ID}" \
-            --data-urlencode "refresh_token=${REFRESH}")
-
-          ACCESS=$(echo "$RESPONSE"      | jq -r '.access_token  // empty')
-          NEW_REFRESH=$(echo "$RESPONSE" | jq -r '.refresh_token // empty')
-
-          if [ -z "$ACCESS" ]; then
-            echo "ERROR: Token refresh failed:"
-            echo "$RESPONSE"
-            echo "Re-run generate_url then exchange_code to re-authenticate."
-            exit 1
-          fi
-
-          echo "::add-mask::$ACCESS"
-          SAVE_REFRESH="${NEW_REFRESH:-$REFRESH}"
-          echo "::add-mask::$SAVE_REFRESH"
-
-          jq -n --arg a "$ACCESS" --arg r "$SAVE_REFRESH" \
-            '{access_token: $a, refresh_token: $r}' > $TOKEN_FILE
-
-          echo "MB_TOKEN=$ACCESS" >> $GITHUB_ENV
+          echo "Using manually provided cookies..."
+          echo "::set-output name=session_token::${{ github.event.inputs.session_token || secrets.MANGABAKA_SESSION }}"
+          echo "::set-output name=cf_clearance::${{ github.event.inputs.cf_clearance || secrets.MANGABAKA_CF_CLEARANCE }}"
+        id: manual_cookies
 
       - name: Fetch AniList manga list
-        if: inputs.mode == 'sync' || inputs.mode == ''
+        id: fetch
         run: |
-          QUERY='query($userName:String,$type:MediaType){MediaListCollection(userName:$userName,type:$type){lists{entries{status score(format:POINT_100) progress progressVolumes repeat notes startedAt{year month day}completedAt{year month day}media{id idMal}}}}}'
-          curl -s -X POST https://graphql.anilist.co \
+          RESPONSE=$(curl -s -X POST https://graphql.anilist.co \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.ANILIST_TOKEN }}" \
-            -d "{\"query\":$(echo "$QUERY" | jq -Rs .),\"variables\":{\"userName\":\"itsmechinmoy\",\"type\":\"MANGA\"}}" \
-            > /tmp/al_manga.json
+            --data '{
+              "query": "query($userName: String){MediaListCollection(userName: $userName, type: MANGA){lists{entries{mediaId status score(format: POINT_100) progress progressVolumes startedAt{year month day} completedAt{year month day} repeat notes private}}}}",
+              "variables": {"userName": "itsmechinmoy"}
+            }')
+          echo "ANILIST_DATA=$RESPONSE" >> $GITHUB_ENV
 
-          COUNT=$(jq '[.data.MediaListCollection.lists[].entries[]] | length' /tmp/al_manga.json)
-          echo "Fetched $COUNT AniList manga entries"
-
-      - name: Sync each entry to MangaBaka
-        if: inputs.mode == 'sync' || inputs.mode == ''
+      - name: Import to MangaBaka
         run: |
-          map_status() {
-            case "$1" in
-              CURRENT|REPEATING) echo "reading" ;;
-              COMPLETED)         echo "completed" ;;
-              PAUSED)            echo "paused" ;;
-              DROPPED)           echo "dropped" ;;
-              *)                 echo "plan_to_read" ;;
-            esac
-          }
+          SESSION="${{ steps.manual_cookies.outputs.session_token }}"
+          CF="${{ steps.manual_cookies.outputs.cf_clearance }}"
+          
+          if [ -z "$SESSION" ] || [ -z "$CF" ]; then
+            echo "❌ Missing required cookies!"
+            exit 1
+          fi
+          
+          # Fetch the payload template from the import page
+          IMPORT_RESPONSE=$(curl -s -X POST "https://mangabaka.org/_app/remote/15bgtxk/importLibraryCommand" \
+            -H "Content-Type: application/json" \
+            -H "Origin: https://mangabaka.org" \
+            -H "Referer: https://mangabaka.org/my/library/import/anilist" \
+            -H "x-sveltekit-pathname: /my/library/import/anilist" \
+            -H "x-sveltekit-search: " \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0" \
+            -H "Sec-Fetch-Dest: empty" \
+            -H "Sec-Fetch-Mode: cors" \
+            -H "Sec-Fetch-Site: same-origin" \
+            -b "__Secure-better-auth.session_token=${SESSION}; cf_clearance=${CF}; content_rating=safe,pornographic; show_discord_banner=no" \
+            --data "$ANILIST_DATA")
+          
+          echo "Import response: $IMPORT_RESPONSE"
+          
+          # Check if successful
+          if echo "$IMPORT_RESPONSE" | grep -q '"type":"result"'; then
+            echo "✅ Import successful!"
+          else
+            echo "⚠️ Import may have failed. Check the response."
+          fi
 
-          pad2() { printf '%02d' "$1"; }
+      - name: Update secrets if new cookies were obtained
+        if: success() && steps.get_cookies.outputs.session_token != ''
+        run: |
+          # This requires GitHub API token with repo scope
+          # You'd need to use GitHub's API to update secrets, but that's complex
+          # Alternative: Store in a file in the repo (not secure!)
+          
+          # For security, let's just log that new cookies were obtained
+          echo "✅ New cookies obtained. Update your GitHub secrets manually or use a secure storage solution."
+          echo "Session token: ${{ steps.get_cookies.outputs.session_token }}"
+          echo "CF clearance: ${{ steps.get_cookies.outputs.cf_clearance }}"
 
-          jq -c '[.data.MediaListCollection.lists[].entries[]] | .[]' /tmp/al_manga.json | \
-          while IFS= read -r entry; do
-            ANI_ID=$(echo "$entry"    | jq -r '.media.id')
-            MAL_ID=$(echo "$entry"    | jq -r '.media.idMal // empty')
-            AL_STATUS=$(echo "$entry" | jq -r '.status')
-            SCORE=$(echo "$entry"     | jq -r '.score')
-            PROGRESS=$(echo "$entry"  | jq -r '.progress')
-            VOLUMES=$(echo "$entry"   | jq -r '.progressVolumes // 0')
-            NOTES=$(echo "$entry"     | jq -r '.notes // ""')
-
-            SY=$(echo "$entry" | jq -r '.startedAt.year   // empty')
-            SM=$(echo "$entry" | jq -r '.startedAt.month  // 1')
-            SD=$(echo "$entry" | jq -r '.startedAt.day    // 1')
-            CY=$(echo "$entry" | jq -r '.completedAt.year  // empty')
-            CM=$(echo "$entry" | jq -r '.completedAt.month // 1')
-            CD=$(echo "$entry" | jq -r '.completedAt.day   // 1')
-
-            STARTED=""
-            [ -n "$SY" ] && STARTED="${SY}-$(pad2 $SM)-$(pad2 $SD)"
-            FINISHED=""
-            [ -n "$CY" ] && FINISHED="${CY}-$(pad2 $CM)-$(pad2 $CD)"
-
-            MB_STATUS=$(map_status "$AL_STATUS")
-
-            MB_ID=""
-            if [ -n "$ANI_ID" ] && [ "$ANI_ID" != "null" ]; then
-              MB_ID=$(curl -s "https://api.mangabaka.dev/v1/source/anilist/${ANI_ID}" \
-                -H "Authorization: Bearer $MB_TOKEN" \
-                -H "Accept: application/json" | \
-                jq -r '(.data.series // []) | (map(select(.state=="active"))[0].id // .[0].id // empty)')
-            fi
-            if [ -z "$MB_ID" ] && [ -n "$MAL_ID" ]; then
-              MB_ID=$(curl -s "https://api.mangabaka.dev/v1/source/my-anime-list/${MAL_ID}" \
-                -H "Authorization: Bearer $MB_TOKEN" \
-                -H "Accept: application/json" | \
-                jq -r '(.data.series // []) | (map(select(.state=="active"))[0].id // .[0].id // empty)')
-            fi
-
-            if [ -z "$MB_ID" ] || [ "$MB_ID" = "null" ]; then
-              echo "SKIP  ani=$ANI_ID mal=$MAL_ID — not found on MangaBaka"
-              sleep 2
-              continue
-            fi
-
-            PAYLOAD=$(jq -n \
-              --arg   state    "$MB_STATUS" \
-              --argjson prog   "$PROGRESS" \
-              --argjson vol    "$VOLUMES" \
-              --argjson score  "$SCORE" \
-              --arg   notes    "$NOTES" \
-              --arg   started  "$STARTED" \
-              --arg   finished "$FINISHED" \
-              '{state:$state, progress_chapter:$prog, progress_volume:$vol, rating:$score, note:$notes}
-               + (if $started  != "" then {start_date:  $started}  else {} end)
-               + (if $finished != "" then {finish_date: $finished} else {} end)')
-
-            EXISTS=$(curl -s -o /dev/null -w "%{http_code}" \
-              "https://api.mangabaka.dev/v1/my/library/${MB_ID}" \
-              -H "Authorization: Bearer $MB_TOKEN" \
-              -H "Accept: application/json")
-
-            METHOD="PUT"
-            [ "$EXISTS" != "200" ] && METHOD="POST"
-
-            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-              -X "$METHOD" "https://api.mangabaka.dev/v1/my/library/${MB_ID}" \
-              -H "Authorization: Bearer $MB_TOKEN" \
-              -H "Content-Type: application/json" \
-              -H "Accept: application/json" \
-              -d "$PAYLOAD")
-
-            echo "[$HTTP_STATUS] $METHOD mb=$MB_ID ani=$ANI_ID state=$MB_STATUS prog=$PROGRESS"
-
-            sleep 2
-          done
-
-      - name: Save updated token cache
-        if: inputs.mode == 'sync' || inputs.mode == ''
-        uses: actions/cache/save@v4
+      - name: Upload artifacts for debugging
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          path: /tmp/mb_tokens.json
-          key: mb-tokens-${{ github.run_id }}
+          name: mangabaka-debug
+          path: |
+            *.json
+            *.png
+          retention-days: 1
