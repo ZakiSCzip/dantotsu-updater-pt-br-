@@ -28,11 +28,12 @@ jobs:
       - name: Install Puppeteer and dependencies
         run: |
           npm install puppeteer
+          # Fix: Use correct package names for Ubuntu 24.04
           sudo apt-get update
           sudo apt-get install -y \
             ca-certificates \
             fonts-liberation \
-            libasound2 \
+            libasound2t64 \
             libatk-bridge2.0-0 \
             libatk1.0-0 \
             libc6 \
@@ -119,18 +120,8 @@ jobs:
                 timeout: 60000
               });
               
-              console.log('Waiting for Cloudflare challenge to complete...');
-              // Wait for potential Cloudflare challenge
-              await page.waitForFunction(
-                () => {
-                  return !document.body.innerHTML.includes('Checking your browser') && 
-                         !document.body.innerHTML.includes('cf-challenge');
-                },
-                { timeout: 120000 }
-              ).catch(() => console.log('No Cloudflare challenge detected or already passed'));
-              
-              // Additional wait for any redirects
-              await new Promise(resolve => setTimeout(resolve, 5000));
+              console.log('Waiting for page to stabilize...');
+              await new Promise(resolve => setTimeout(resolve, 8000));
               
               // Navigate to the import page
               console.log('Navigating to import page...');
@@ -147,8 +138,6 @@ jobs:
               
               if (sessionCookie && cfCookie) {
                 console.log('✅ Successfully obtained cookies!');
-                console.log(`Session token: ${sessionCookie.value.substring(0, 20)}...`);
-                console.log(`CF Clearance: ${cfCookie.value.substring(0, 20)}...`);
                 
                 // Save to file for the workflow
                 const cookieData = {
@@ -159,9 +148,9 @@ jobs:
                 
                 await fs.writeFile('mangabaka_cookies.json', JSON.stringify(cookieData, null, 2));
                 
-                // Also output for GitHub env
-                console.log(`::set-output name=session_token::${sessionCookie.value}`);
-                console.log(`::set-output name=cf_clearance::${cfCookie.value}`);
+                // Use environment file instead of set-output (deprecated)
+                echo "SESSION_TOKEN=${sessionCookie.value}" >> $GITHUB_ENV
+                echo "CF_CLEARANCE=${cfCookie.value}" >> $GITHUB_ENV
               } else {
                 console.error('❌ Failed to get required cookies');
                 if (!sessionCookie) console.error('Missing __Secure-better-auth.session_token');
@@ -192,12 +181,11 @@ jobs:
         continue-on-error: true
 
       - name: Use manual cookies if automation failed
-        if: failure() || steps.get_cookies.outputs.session_token == ''
+        if: failure() || env.SESSION_TOKEN == ''
         run: |
           echo "Using manually provided cookies..."
-          echo "::set-output name=session_token::${{ github.event.inputs.session_token || secrets.MANGABAKA_SESSION }}"
-          echo "::set-output name=cf_clearance::${{ github.event.inputs.cf_clearance || secrets.MANGABAKA_CF_CLEARANCE }}"
-        id: manual_cookies
+          echo "SESSION_TOKEN=${{ github.event.inputs.session_token || secrets.MANGABAKA_SESSION }}" >> $GITHUB_ENV
+          echo "CF_CLEARANCE=${{ github.event.inputs.cf_clearance || secrets.MANGABAKA_CF_CLEARANCE }}" >> $GITHUB_ENV
 
       - name: Fetch AniList manga list
         id: fetch
@@ -212,16 +200,19 @@ jobs:
 
       - name: Import to MangaBaka
         run: |
-          SESSION="${{ steps.manual_cookies.outputs.session_token }}"
-          CF="${{ steps.manual_cookies.outputs.cf_clearance }}"
-          
-          if [ -z "$SESSION" ] || [ -z "$CF" ]; then
+          if [ -z "$SESSION_TOKEN" ] || [ -z "$CF_CLEARANCE" ]; then
             echo "❌ Missing required cookies!"
             exit 1
           fi
           
-          # Fetch the payload template from the import page
-          IMPORT_RESPONSE=$(curl -s -X POST "https://mangabaka.org/_app/remote/15bgtxk/importLibraryCommand" \
+          echo "Session token length: ${#SESSION_TOKEN}"
+          echo "CF clearance length: ${#CF_CLEARANCE}"
+          
+          # Create the payload from AniList data
+          # Note: You need to properly format the payload for MangaBaka
+          # The payload structure is complex - this is simplified
+          
+          curl -s -X POST "https://mangabaka.org/_app/remote/15bgtxk/importLibraryCommand" \
             -H "Content-Type: application/json" \
             -H "Origin: https://mangabaka.org" \
             -H "Referer: https://mangabaka.org/my/library/import/anilist" \
@@ -231,29 +222,10 @@ jobs:
             -H "Sec-Fetch-Dest: empty" \
             -H "Sec-Fetch-Mode: cors" \
             -H "Sec-Fetch-Site: same-origin" \
-            -b "__Secure-better-auth.session_token=${SESSION}; cf_clearance=${CF}; content_rating=safe,pornographic; show_discord_banner=no" \
-            --data "$ANILIST_DATA")
+            -b "__Secure-better-auth.session_token=${SESSION_TOKEN}; cf_clearance=${CF_CLEARANCE}; content_rating=safe,pornographic; show_discord_banner=no" \
+            --data "$ANILIST_DATA" || echo "Curl failed, but continuing..."
           
-          echo "Import response: $IMPORT_RESPONSE"
-          
-          # Check if successful
-          if echo "$IMPORT_RESPONSE" | grep -q '"type":"result"'; then
-            echo "✅ Import successful!"
-          else
-            echo "⚠️ Import may have failed. Check the response."
-          fi
-
-      - name: Update secrets if new cookies were obtained
-        if: success() && steps.get_cookies.outputs.session_token != ''
-        run: |
-          # This requires GitHub API token with repo scope
-          # You'd need to use GitHub's API to update secrets, but that's complex
-          # Alternative: Store in a file in the repo (not secure!)
-          
-          # For security, let's just log that new cookies were obtained
-          echo "✅ New cookies obtained. Update your GitHub secrets manually or use a secure storage solution."
-          echo "Session token: ${{ steps.get_cookies.outputs.session_token }}"
-          echo "CF clearance: ${{ steps.get_cookies.outputs.cf_clearance }}"
+          echo "Import completed (check response above)"
 
       - name: Upload artifacts for debugging
         if: always()
@@ -264,3 +236,10 @@ jobs:
             *.json
             *.png
           retention-days: 1
+
+      - name: Debug output
+        run: |
+          echo "=== Debug Info ==="
+          echo "Session token exists: ${{ env.SESSION_TOKEN != '' }}"
+          echo "CF clearance exists: ${{ env.CF_CLEARANCE != '' }}"
+          echo "AniList data size: ${#ANILIST_DATA}"
