@@ -1,4 +1,4 @@
-name: Build, Release and Sync Dantotsu
+name: Build and Release Dantotsu (pt-BR)
 
 permissions:
   contents: write
@@ -9,8 +9,19 @@ concurrency:
 
 on:
   schedule:
-    - cron: "0 * * * *" # Run every hour
+    - cron: "0 * * * *" # Roda de hora em hora
   workflow_dispatch:
+
+env:
+  # Espelho PÚBLICO do Dantotsu oficial (rebelonion/Dantotsu, branch dev).
+  # É atualizado de hora em hora a partir do Forgejo oficial.
+  # Troque por outro espelho/branch aqui se necessário.
+  MIRROR_REPO: "https://github.com/itsmechinmoy/Dantotsu.git"
+  MIRROR_BRANCH: "main"
+  # Repositório oficial (apenas para os links do changelog).
+  UPSTREAM_WEB: "https://git.rebelonion.dev/rebelonion/Dantotsu"
+  # Flavor sem Firebase/Google Services.
+  BUILD_FLAVOR: "fdroid"
 
 jobs:
   check-updates:
@@ -20,258 +31,96 @@ jobs:
       LATEST_SHA: ${{ steps.compare.outputs.LATEST_SHA }}
       LAST_SHA: ${{ steps.compare.outputs.LAST_SHA }}
       VERSION: ${{ steps.version.outputs.VERSION }}
-
     steps:
-      - name: Install Expect
-        run: sudo apt-get update && sudo apt-get install -y expect
+      - name: Clonar o espelho público do Dantotsu
+        run: git clone --depth 1 --branch "$MIRROR_BRANCH" "$MIRROR_REPO" dantotsu
 
-      - name: Setup SSH Agent with Passphrase
+      - name: Baixar o último SHA do release mais recente deste repositório
         env:
-          SSH_KEY: ${{ secrets.FORGEJO_SSH_KEY }}
-          PASSPHRASE: ${{ secrets.FORGEJO_PASSPHRASE }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_KEY" > ~/.ssh/forgejo_key
-          chmod 600 ~/.ssh/forgejo_key
-          
-          eval $(ssh-agent -s)
-          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> $GITHUB_ENV
-          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> $GITHUB_ENV
-          
-          expect <<EOF
-            spawn ssh-add /home/runner/.ssh/forgejo_key
-            expect "Enter passphrase"
-            send "$PASSPHRASE\r"
-            expect eof
-          EOF
-
-      - name: Setup SSH Config
-        run: |
-          ssh-keyscan -p 2222 gitssh.rebelonion.dev >> ~/.ssh/known_hosts
-          cat <<EOF > ~/.ssh/config
-          Host gitssh.rebelonion.dev
-            HostName gitssh.rebelonion.dev
-            Port 2222
-            User git
-            IdentityFile ~/.ssh/forgejo_key
-            IdentitiesOnly yes
-          EOF
-
-      - name: Checkout Repository
-        run: |
-          git clone --depth 1 --branch dev gitssh.rebelonion.dev:rebelonion/Dantotsu.git .
-
-      - name: Download last SHA from latest release
-        id: download-last-sha
-        run: |
-          LATEST_RELEASE=$(curl -s https://api.github.com/repos/itsmechinmoy/dantotsu-updater/releases/latest)
-          SHA_URL=$(echo "$LATEST_RELEASE" | jq -r '.assets[] | select(.name == "last_sha.txt") | .browser_download_url')
-          if [ -n "$SHA_URL" ]; then
-            curl -sL "$SHA_URL" -o last_sha.txt
-            echo "Downloaded last SHA from release"
-          else
-            echo "No last_sha.txt found in latest release"
-          fi
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern "last_sha.txt" --dir . || echo "Nenhum last_sha.txt encontrado (primeira execução)."
         continue-on-error: true
 
-      - name: Check for updates
+      - name: Comparar SHAs
         id: compare
         run: |
-          LATEST_SHA=$(git rev-parse HEAD)
+          LATEST_SHA=$(git -C dantotsu rev-parse HEAD)
           echo "LATEST_SHA=${LATEST_SHA}" >> $GITHUB_OUTPUT
           if [ -f last_sha.txt ]; then
             LAST_SHA=$(cat last_sha.txt)
-            echo "LAST_SHA=${LAST_SHA}" >> $GITHUB_OUTPUT
-            echo "Last SHA: $LAST_SHA | Latest SHA: $LATEST_SHA"
           else
             LAST_SHA=""
-            echo "LAST_SHA=" >> $GITHUB_OUTPUT
-            echo "No previous SHA found. First run detected."
           fi
+          echo "LAST_SHA=${LAST_SHA}" >> $GITHUB_OUTPUT
+          echo "Último SHA construído: '${LAST_SHA}' | SHA atual do upstream: '${LATEST_SHA}'"
           if [ "${{ github.event_name }}" == "workflow_dispatch" ] || [ "$LATEST_SHA" != "$LAST_SHA" ]; then
             echo "SHOULD_RUN=true" >> $GITHUB_OUTPUT
-            echo "$LATEST_SHA" > last_sha.txt
           else
             echo "SHOULD_RUN=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Extract Version
+      - name: Extrair versão
         if: steps.compare.outputs.SHOULD_RUN == 'true'
         id: version
         run: |
-          VER=$(grep -E -o 'versionName = "[^"]*"' app/build.gradle.kts | cut -d'"' -f2)
-          SHA=$(git rev-parse HEAD)
+          VER=$(grep -E -o 'versionName = "[^"]*"' dantotsu/app/build.gradle.kts | cut -d'"' -f2)
+          SHA=$(git -C dantotsu rev-parse HEAD)
           VERSION="${VER}+${SHA:0:7}"
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          echo "Version: $VERSION"
-
-  sync:
-    runs-on: ubuntu-latest
-    needs: check-updates
-    if: needs.check-updates.outputs.SHOULD_RUN == 'true'
-
-    steps:
-      - name: Install Expect
-        run: sudo apt-get update && sudo apt-get install -y expect
-
-      - name: Setup SSH Agent with Passphrase
-        env:
-          SSH_KEY: ${{ secrets.FORGEJO_SSH_KEY }}
-          PASSPHRASE: ${{ secrets.FORGEJO_PASSPHRASE }}
-          OTHER_SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_KEY" > ~/.ssh/forgejo_key
-          echo "$OTHER_SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/forgejo_key ~/.ssh/id_ed25519
-          
-          eval $(ssh-agent -s)
-          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> $GITHUB_ENV
-          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> $GITHUB_ENV
-          
-          expect <<EOF
-            spawn ssh-add /home/runner/.ssh/forgejo_key
-            expect "Enter passphrase"
-            send "$PASSPHRASE\r"
-            expect eof
-          EOF
-          
-          # Add the sync key (assuming no passphrase for this one)
-          ssh-add ~/.ssh/id_ed25519
-
-      - name: Setup SSH Config
-        run: |
-          ssh-keyscan -p 2222 gitssh.rebelonion.dev >> ~/.ssh/known_hosts
-          ssh-keyscan codeberg.org gitlab.com >> ~/.ssh/known_hosts
-          cat <<EOF > ~/.ssh/config
-          Host gitssh.rebelonion.dev
-            HostName gitssh.rebelonion.dev
-            Port 2222
-            User git
-            IdentityFile ~/.ssh/forgejo_key
-            IdentitiesOnly yes
-          EOF
-
-      - name: Checkout Repository
-        run: |
-          git clone --branch dev gitssh.rebelonion.dev:rebelonion/Dantotsu.git .
-          git fetch origin dev
-          git checkout dev
-
-      - name: Configure Git
-        run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-
-      - name: Sync to GitHub (itsmechinmoy/Dantotsu main)
-        env:
-          GITHUB_PAT: ${{ secrets.DANTOTSU_SYNC }}
-        run: |
-          git remote add github https://$GITHUB_PAT@github.com/itsmechinmoy/Dantotsu.git
-          git push github dev:main --force
-
-      - name: Sync to Codeberg
-        run: |
-          git remote add codeberg git@codeberg.org:itsmechinmoy/Dantotsu.git
-          git rm -f .github/workflows/codeberg-gitlab-sync.yml 2>/dev/null || true
-          git diff --cached --quiet || git commit -m "Remove sync workflow file"
-          git push codeberg dev --force
-
-      - name: Sync to GitLab
-        run: |
-          git remote add gitlab git@gitlab.com:itsmechinmoy/dantotsu.git
-          git push gitlab dev --force
+          echo "Versão: $VERSION"
 
   build:
     runs-on: ubuntu-latest
-    needs: [check-updates, sync]
+    needs: check-updates
     if: needs.check-updates.outputs.SHOULD_RUN == 'true'
-
     steps:
-      - name: Install Expect
-        run: sudo apt-get update && sudo apt-get install -y expect
+      - name: Checkout deste repositório (tradução + scripts)
+        uses: actions/checkout@v4
 
-      - name: Setup SSH Agent with Passphrase
-        env:
-          SSH_KEY: ${{ secrets.FORGEJO_SSH_KEY }}
-          PASSPHRASE: ${{ secrets.FORGEJO_PASSPHRASE }}
+      - name: Clonar o espelho público do Dantotsu
         run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_KEY" > ~/.ssh/forgejo_key
-          chmod 600 ~/.ssh/forgejo_key
-          
-          eval $(ssh-agent -s)
-          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> $GITHUB_ENV
-          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> $GITHUB_ENV
-          
-          expect <<EOF
-            spawn ssh-add /home/runner/.ssh/forgejo_key
-            expect "Enter passphrase"
-            send "$PASSPHRASE\r"
-            expect eof
-          EOF
+          git clone --branch "$MIRROR_BRANCH" "$MIRROR_REPO" dantotsu
+          # garante histórico suficiente para o changelog
+          git -C dantotsu fetch --unshallow 2>/dev/null || true
 
-      - name: Setup SSH Config
-        run: |
-          ssh-keyscan -p 2222 gitssh.rebelonion.dev >> ~/.ssh/known_hosts
-          cat <<EOF > ~/.ssh/config
-          Host gitssh.rebelonion.dev
-            HostName gitssh.rebelonion.dev
-            Port 2222
-            User git
-            IdentityFile ~/.ssh/forgejo_key
-            IdentitiesOnly yes
-          EOF
+      - name: Aplicar tradução pt-BR
+        run: python3 scripts/apply_translation.py dantotsu
 
-      - name: Checkout Repository
-        run: |
-          git clone --branch dev gitssh.rebelonion.dev:rebelonion/Dantotsu.git .
-
-      - name: Fetch full history for commit log
-        run: |
-          if [ -n "${{ needs.check-updates.outputs.LAST_SHA }}" ]; then
-            git fetch --unshallow || true
-            git fetch --depth=100 origin dev || true
-          fi
-
-      - name: Generate Commit Log
+      - name: Gerar changelog
         id: commit-log
         run: |
-          REPO_URL="https://git.rebelonion.dev/rebelonion/Dantotsu"
-          if [ -n "${{ needs.check-updates.outputs.LAST_SHA }}" ]; then
-            LAST_SHA="${{ needs.check-updates.outputs.LAST_SHA }}"
-            if git cat-file -e "$LAST_SHA^{commit}" 2>/dev/null; then
-              COMMIT_LOGS=$(git log $LAST_SHA..HEAD --pretty=format:"● %s ~%an [֍](${REPO_URL}/commit/%H)" --max-count=10)
-            else
-              echo "Warning: Last SHA not found in history, showing last 10 commits"
-              COMMIT_LOGS=$(git log HEAD --pretty=format:"● %s ~%an [֍](${REPO_URL}/commit/%H)" --max-count=10)
-            fi
+          cd dantotsu
+          LAST_SHA="${{ needs.check-updates.outputs.LAST_SHA }}"
+          if [ -n "$LAST_SHA" ] && git cat-file -e "${LAST_SHA}^{commit}" 2>/dev/null; then
+            RANGE="${LAST_SHA}..HEAD"
           else
-            LAST_SHA=$(git rev-list --max-parents=0 HEAD)
-            COMMIT_LOGS=$(git log $LAST_SHA..HEAD --pretty=format:"● %s ~%an [֍](${REPO_URL}/commit/%H)" --max-count=10)
+            RANGE="HEAD -n 10"
           fi
-          if [ -z "$COMMIT_LOGS" ]; then
-            COMMIT_LOGS="● No new commits since last release"
-          fi
-          COMMIT_LOGS=$(echo "$COMMIT_LOGS" | sed -E "s@#([0-9]+)@[#\1](${REPO_URL}/pull/\1)@g")
-          # Save for Telegram
-          echo "COMMIT_LOG<<EOF" >> $GITHUB_OUTPUT
-          echo "$COMMIT_LOGS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          # Save base commit log
-          echo -e "Commits:\n" > commit_log.txt
-          echo "$COMMIT_LOGS" | sed 's/●/\n●/g' | sed '/^$/d' >> commit_log.txt
+          COMMIT_LOGS=$(git log $RANGE --pretty=format:"● %s ~%an [↗](${UPSTREAM_WEB}/commit/%H)" 2>/dev/null || true)
+          [ -z "$COMMIT_LOGS" ] && COMMIT_LOGS="● Sem novos commits desde o último release"
+          cd "$GITHUB_WORKSPACE"
+          {
+            echo "Aplicativo Dantotsu traduzido para Português (Brasil)."
+            echo ""
+            echo "Mudanças do upstream desde o último build:"
+            echo ""
+            echo "$COMMIT_LOGS"
+          } > changelog.txt
 
-      - name: Setup JDK 17
+      - name: Configurar JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
           java-version: 17
           cache: gradle
 
-      - name: Add Split APK Configuration
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Adicionar configuração de Split APK
         run: |
-          if ! grep -q "splits {" app/build.gradle.kts; then
+          if ! grep -q "splits {" dantotsu/app/build.gradle.kts; then
             sed -i '/^android {/a\
                 splits {\
                     abi {\
@@ -280,146 +129,75 @@ jobs:
                         include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")\
                         isUniversalApk = true\
                     }\
-                }' app/build.gradle.kts
+                }' dantotsu/app/build.gradle.kts
           fi
 
-      - name: Decode Keystore
-        run: echo "${{ secrets.KEYSTORE_FILE }}" | base64 -d > $GITHUB_WORKSPACE/key.keystore
-
-      - name: Build APKs
-        run: |
-          chmod +x ./gradlew
-          ./gradlew assembleGoogleRelease \
-            -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/key.keystore \
-            -Pandroid.injected.signing.store.password=${{ secrets.KEYSTORE_PASSWORD }} \
-            -Pandroid.injected.signing.key.alias=${{ secrets.KEY_ALIAS }} \
-            -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }}
-
-      - name: Process APKs and Generate Checksums
-        run: |
-          cd app/build/outputs/apk/google/release/
-          if [ -f "app-google-universal-release.apk" ]; then
-            UNIVERSAL="app-google-universal-release.apk"
-          elif [ -f "app-google-release.apk" ]; then
-            UNIVERSAL="app-google-release.apk"
-          fi
-          
-          {
-            echo -e "\n---\n### Checksums\n"
-            echo "| Variant | SHA-256 |"
-            echo "| ------- | ------- |"
-            if [ -n "$UNIVERSAL" ]; then
-              SHA=$(sha256sum "$UNIVERSAL" | cut -d' ' -f1)
-              echo "| Universal | $SHA |"
-            fi
-            for apk in app-google-*-release.apk; do
-              [ "$apk" = "$UNIVERSAL" ] && continue
-              [ "$apk" = "app-google-*-release.apk" ] && continue
-              ABI=$(echo "$apk" | sed 's/app-google-//' | sed 's/-release.apk//')
-              SHA=$(sha256sum "$apk" | cut -d' ' -f1)
-              echo "| $ABI | $SHA |"
-            done
-            echo -e "\n---\n"
-          } > $GITHUB_WORKSPACE/checksums.txt
-          
-          cd $GITHUB_WORKSPACE
-          {
-            cat commit_log.txt
-            cat checksums.txt
-            CURRENT_TAG_SAFE=$(echo "v${{ needs.check-updates.outputs.VERSION }}" | sed 's/+/%2B/g')
-            echo "![Total Downloads](https://img.shields.io/github/downloads/itsmechinmoy/dantotsu-updater/total?style=for-the-badge&label=TOTAL%20DOWNLOADS&labelColor=black&color=white) ![Current Release](https://img.shields.io/github/downloads/itsmechinmoy/dantotsu-updater/${CURRENT_TAG_SAFE}/total?style=for-the-badge&label=CURRENT%20RELEASE&labelColor=black&color=white)"
-          } > commit_log_updater.txt
-  
-          {
-            cat commit_log.txt
-            cat checksums.txt
-            CURRENT_TAG_SAFE=$(echo "v${{ needs.check-updates.outputs.VERSION }}" | sed 's/+/%2B/g')
-            echo "![Total Downloads](https://img.shields.io/github/downloads/itsmechinmoy/Dantotsu/total?style=for-the-badge&label=TOTAL%20DOWNLOADS&labelColor=black&color=white) ![Current Release](https://img.shields.io/github/downloads/itsmechinmoy/Dantotsu/${CURRENT_TAG_SAFE}/total?style=for-the-badge&label=CURRENT%20RELEASE&labelColor=black&color=white)"
-          } > commit_log_dantotsu.txt
-
-      - name: Upload APK Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Dantotsu-APKs
-          retention-days: 5
-          compression-level: 9
-          path: app/build/outputs/apk/google/release/*.apk
-
-      - name: Upload to Telegram
+      - name: Compilar e assinar o APK
         env:
-          VERSION: ${{ needs.check-updates.outputs.VERSION }}
-          COMMIT_LOG: ${{ steps.commit-log.outputs.COMMIT_LOG }}
+          KEYSTORE_FILE: ${{ secrets.KEYSTORE_FILE }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          cd app/build/outputs/apk/google/release/
-          if [ -f "app-google-universal-release.apk" ]; then
-            APK_PATH="app-google-universal-release.apk"
-          elif [ -f "app-google-release.apk" ]; then
-            APK_PATH="app-google-release.apk"
+          cd dantotsu
+          chmod +x ./gradlew
+          FLAVOR_CAP="$(echo "${BUILD_FLAVOR}" | sed 's/.*/\u&/')"
+          if [ -n "$KEYSTORE_FILE" ]; then
+            echo "Assinando com keystore fornecido via secrets."
+            echo "$KEYSTORE_FILE" | base64 -d > "$GITHUB_WORKSPACE/key.keystore"
+            ./gradlew "assemble${FLAVOR_CAP}Release" \
+              -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/key.keystore" \
+              -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
+              -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+              -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
           else
-            echo "No universal APK found!"
-            exit 1
+            echo "Nenhum keystore configurado; usando assinatura debug padrão."
+            ./gradlew "assemble${FLAVOR_CAP}Release"
           fi
-          
-          telegram_commit_messages=$(echo "$COMMIT_LOG" | while read -r line; do
-            message=$(echo "$line" | sed -E 's/● (.*) ~(.*) \[֍\]\((.*)\)/● \1 ~\2 <a href="\3">֍<\/a>/')
-            message=$(echo "$message" | sed -E 's/\[#([0-9]+)\]\((https:\/\/[^)]+)\)/<a href="\2">#\1<\/a>/g')
-            echo "$message"
-          done)
-          telegram_commit_messages="<blockquote>${telegram_commit_messages}</blockquote>"
-          
-          curl -sS -f -X POST \
-            "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument" \
-            -F "chat_id=-1003463471716" \
-            -F "document=@$APK_PATH" \
-            -F "caption=🔥 New Dantotsu Build Available!
-          Commits:
-          ${telegram_commit_messages}
-          Version: ${VERSION}" \
-            -F "parse_mode=HTML"
 
-      - name: Save SHA for next run
+      - name: Gerar checksums
         run: |
-          echo "${{ needs.check-updates.outputs.LATEST_SHA }}" > last_sha.txt
+          OUT="dantotsu/app/build/outputs/apk/${BUILD_FLAVOR}/release"
+          {
+            echo ""
+            echo "---"
+            echo "### Checksums (SHA-256)"
+            echo ""
+            echo "| Arquivo | SHA-256 |"
+            echo "| ------- | ------- |"
+            for apk in "$OUT"/*.apk; do
+              [ -e "$apk" ] || continue
+              SHA=$(sha256sum "$apk" | cut -d' ' -f1)
+              echo "| $(basename "$apk") | $SHA |"
+            done
+          } >> changelog.txt
 
-      - name: Delete existing tags and releases if exists
-        run: |
-          TAG="v${{ needs.check-updates.outputs.VERSION }}"
-          gh release delete "$TAG" -y --repo itsmechinmoy/dantotsu-updater || true
-          git push https://${{ secrets.GITHUB_TOKEN }}@github.com/itsmechinmoy/dantotsu-updater.git :refs/tags/$TAG || true
-          gh release delete "$TAG" -y --repo itsmechinmoy/Dantotsu || true
-          git push https://${{ secrets.DANTOTSU_SYNC }}@github.com/itsmechinmoy/Dantotsu.git :refs/tags/$TAG || true
+      - name: Salvar SHA para a próxima execução
+        run: echo "${{ needs.check-updates.outputs.LATEST_SHA }}" > last_sha.txt
+
+      - name: Remover tag/release anterior, se existir
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ needs.check-updates.outputs.VERSION }}"
+          gh release delete "$TAG" -y --repo "$GITHUB_REPOSITORY" --cleanup-tag || true
 
-      - name: Create Release in dantotsu-updater
+      - name: Criar release neste repositório
         uses: ncipollo/release-action@v1
         with:
           tag: v${{ needs.check-updates.outputs.VERSION }}
-          name: Dantotsu v${{ needs.check-updates.outputs.VERSION }}
-          bodyFile: commit_log_updater.txt
+          name: Dantotsu pt-BR v${{ needs.check-updates.outputs.VERSION }}
+          bodyFile: changelog.txt
           artifacts: |
-            app/build/outputs/apk/google/release/*.apk
+            dantotsu/app/build/outputs/apk/${{ env.BUILD_FLAVOR }}/release/*.apk
             last_sha.txt
           token: ${{ secrets.GITHUB_TOKEN }}
           makeLatest: true
 
-      - name: Create Release in Dantotsu
-        uses: ncipollo/release-action@v1
-        with:
-          tag: v${{ needs.check-updates.outputs.VERSION }}
-          name: Dantotsu v${{ needs.check-updates.outputs.VERSION }}
-          bodyFile: commit_log_dantotsu.txt
-          artifacts: app/build/outputs/apk/google/release/*.apk
-          token: ${{ secrets.DANTOTSU_SYNC }}
-          repo: Dantotsu
-          owner: itsmechinmoy
-          makeLatest: true
-
-      - name: Upload Commit Log Artifact
+      - name: Upload dos APKs como artifact
         uses: actions/upload-artifact@v4
         with:
-          name: commit-log
-          path: |
-            commit_log_updater.txt
-            commit_log_dantotsu.txt
-          retention-days: 30
+          name: Dantotsu-ptBR-APKs
+          retention-days: 5
+          compression-level: 9
+          path: dantotsu/app/build/outputs/apk/${{ env.BUILD_FLAVOR }}/release/*.apk
