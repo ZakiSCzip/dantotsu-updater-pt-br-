@@ -108,40 +108,11 @@ jobs:
             echo "$COMMIT_LOGS"
           } > changelog.txt
 
-      - name: Corrigir toolchain do Kotlin
-        run: |
-          python3 << 'EOF'
-          import re
-          with open("dantotsu/app/build.gradle.kts", "r") as f:
-              c = f.read()
-          
-          c = re.sub(r'\s*jvmToolchain\(17\)\s*\n', '\n', c)
-          kotlin_block = '''kotlin {
-      jvmToolchain {
-          languageVersion.set(JavaLanguageVersion.of(21))
-          vendor.set(JvmVendorSpec.ADOPTIUM)
-      }'''
-          c = c.replace('kotlin {', kotlin_block)
-          
-          with open("dantotsu/app/build.gradle.kts", "w") as f:
-              f.write(c)
-          EOF
-          echo "org.gradle.java.installations.auto-download=false" >> dantotsu/gradle.properties
-          echo "org.gradle.java.installations.fromEnv=JAVA_HOME" >> dantotsu/gradle.properties
-
-      - name: Verificar toolchain corrigido
-        run: |
-          echo "=== kotlin block ==="
-          grep -A 10 "kotlin {" dantotsu/app/build.gradle.kts || echo "No kotlin block found"
-          echo "=== gradle.properties ==="
-          cat dantotsu/gradle.properties
-
-
-      - name: Configurar JDK 21
+      - name: Configurar JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
-          java-version: 21
+          java-version: 17
           cache: gradle
 
       - name: Configurar Android SDK
@@ -175,17 +146,13 @@ jobs:
             echo "Assinando com keystore fornecido via secrets."
             echo "$KEYSTORE_FILE" | base64 -d > "$GITHUB_WORKSPACE/key.keystore"
             ./gradlew "assemble${FLAVOR_CAP}Release" \
-              -Pkotlin.daemon.jvm="$JAVA_HOME" \
               -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/key.keystore" \
               -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
               -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
-              -Pandroid.injected.signing.key.password="$KEY_PASSWORD" \
-              --stacktrace
+              -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
           else
             echo "Nenhum keystore configurado; usando assinatura debug padrão."
-            ./gradlew "assemble${FLAVOR_CAP}Release" \
-              -Pkotlin.daemon.jvm="$JAVA_HOME" \
-              --stacktrace
+            ./gradlew "assemble${FLAVOR_CAP}Release"
           fi
 
       - name: Gerar checksums
