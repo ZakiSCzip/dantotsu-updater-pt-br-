@@ -110,9 +110,23 @@ jobs:
 
       - name: Corrigir toolchain do Kotlin
         run: |
-          python3 -c 'c=open("dantotsu/app/build.gradle.kts").read();c=c.replace("jvmToolchain(17)\n    compilerOptions","jvmToolchain {\n        languageVersion.set(JavaLanguageVersion.of(21))\n        vendor.set(JvmVendorSpec.ADOPTIUM)\n    }\n    compilerOptions");open("dantotsu/app/build.gradle.kts","w").write(c)'
+          python3 -c '
+          c = open("dantotsu/app/build.gradle.kts").read()
+          c = c.replace(
+            "    jvmToolchain(17)\n    compilerOptions",
+            "    jvmToolchain {\n        languageVersion.set(JavaLanguageVersion.of(21))\n        vendor.set(JvmVendorSpec.ADOPTIUM)\n    }\n    compilerOptions"
+          )
+          open("dantotsu/app/build.gradle.kts", "w").write(c)
+          '
           echo "org.gradle.java.installations.auto-download=false" >> dantotsu/gradle.properties
           echo "org.gradle.java.installations.fromEnv=JAVA_HOME" >> dantotsu/gradle.properties
+
+      - name: Verificar toolchain corrigido
+        run: |
+          echo "=== kotlin block ==="
+          grep -A 10 "kotlin {" dantotsu/app/build.gradle.kts
+          echo "=== gradle.properties ==="
+          cat dantotsu/gradle.properties
 
 
       - name: Configurar JDK 21
@@ -153,13 +167,15 @@ jobs:
             echo "Assinando com keystore fornecido via secrets."
             echo "$KEYSTORE_FILE" | base64 -d > "$GITHUB_WORKSPACE/key.keystore"
             ./gradlew "assemble${FLAVOR_CAP}Release" \
+              -Pkotlin.daemon.jvm="$JAVA_HOME" \
               -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/key.keystore" \
               -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
               -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
               -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
           else
             echo "Nenhum keystore configurado; usando assinatura debug padrão."
-            ./gradlew "assemble${FLAVOR_CAP}Release"
+            ./gradlew "assemble${FLAVOR_CAP}Release" \
+              -Pkotlin.daemon.jvm="$JAVA_HOME"
           fi
 
       - name: Gerar checksums
