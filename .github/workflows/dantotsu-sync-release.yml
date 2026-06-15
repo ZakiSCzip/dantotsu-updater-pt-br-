@@ -110,21 +110,29 @@ jobs:
 
       - name: Corrigir toolchain do Kotlin
         run: |
-          python3 -c '
-          c = open("dantotsu/app/build.gradle.kts").read()
-          c = c.replace(
-            "    jvmToolchain(17)\n    compilerOptions",
-            "    jvmToolchain {\n        languageVersion.set(JavaLanguageVersion.of(21))\n        vendor.set(JvmVendorSpec.ADOPTIUM)\n    }\n    compilerOptions"
-          )
-          open("dantotsu/app/build.gradle.kts", "w").write(c)
-          '
+          python3 << 'EOF'
+          import re
+          with open("dantotsu/app/build.gradle.kts", "r") as f:
+              c = f.read()
+          
+          c = re.sub(r'\s*jvmToolchain\(17\)\s*\n', '\n', c)
+          kotlin_block = '''kotlin {
+      jvmToolchain {
+          languageVersion.set(JavaLanguageVersion.of(21))
+          vendor.set(JvmVendorSpec.ADOPTIUM)
+      }'''
+          c = c.replace('kotlin {', kotlin_block)
+          
+          with open("dantotsu/app/build.gradle.kts", "w") as f:
+              f.write(c)
+          EOF
           echo "org.gradle.java.installations.auto-download=false" >> dantotsu/gradle.properties
           echo "org.gradle.java.installations.fromEnv=JAVA_HOME" >> dantotsu/gradle.properties
 
       - name: Verificar toolchain corrigido
         run: |
           echo "=== kotlin block ==="
-          grep -A 10 "kotlin {" dantotsu/app/build.gradle.kts
+          grep -A 10 "kotlin {" dantotsu/app/build.gradle.kts || echo "No kotlin block found"
           echo "=== gradle.properties ==="
           cat dantotsu/gradle.properties
 
@@ -171,11 +179,13 @@ jobs:
               -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/key.keystore" \
               -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
               -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
-              -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
+              -Pandroid.injected.signing.key.password="$KEY_PASSWORD" \
+              --stacktrace
           else
             echo "Nenhum keystore configurado; usando assinatura debug padrão."
             ./gradlew "assemble${FLAVOR_CAP}Release" \
-              -Pkotlin.daemon.jvm="$JAVA_HOME"
+              -Pkotlin.daemon.jvm="$JAVA_HOME" \
+              --stacktrace
           fi
 
       - name: Gerar checksums
