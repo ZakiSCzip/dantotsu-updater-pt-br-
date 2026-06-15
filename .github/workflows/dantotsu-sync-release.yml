@@ -108,11 +108,21 @@ jobs:
             echo "$COMMIT_LOGS"
           } > changelog.txt
 
-      - name: Configurar JDK 17
+      - name: Corrigir toolchain do Kotlin (vendor JetBrains → Adoptium)
+        run: |
+          sed -i '/^kotlin {/a\
+          \    jvmToolchain {\
+          \        languageVersion.set(JavaLanguageVersion.of(21))\
+          \        vendor.set(JvmVendorSpec.ADOPTIUM)\
+          \    }' dantotsu/app/build.gradle.kts
+          sed -i '/jvmToolchain(17)/d' dantotsu/app/build.gradle.kts
+
+
+      - name: Configurar JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
-          java-version: 17
+          java-version: 21
           cache: gradle
 
       - name: Configurar Android SDK
