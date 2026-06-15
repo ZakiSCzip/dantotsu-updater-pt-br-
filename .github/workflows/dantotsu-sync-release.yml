@@ -79,14 +79,6 @@ jobs:
           git clone --branch "$MIRROR_BRANCH" "$MIRROR_REPO" dantotsu
           git -C dantotsu fetch --unshallow 2>/dev/null || true
 
-      - name: DEBUG - Encontrar referência JetBrains
-        run: |
-          echo "=== Arquivos com JetBrains ==="
-          grep -rn "JetBrains\|JETBRAINS\|jvmToolchain\|javaToolchains\|toolchain" dantotsu --include="*.kts" --include="*.gradle" -l || echo "Nenhum arquivo encontrado"
-          echo ""
-          echo "=== Linhas exatas ==="
-          grep -rn "JetBrains\|JETBRAINS\|jvmToolchain\|javaToolchains\|toolchain" dantotsu --include="*.kts" --include="*.gradle" || echo "Nenhuma linha encontrada"
-
       - name: Aplicar tradução pt-BR
         run: python3 scripts/apply_translation.py dantotsu
 
@@ -111,15 +103,24 @@ jobs:
             echo "$COMMIT_LOGS"
           } > changelog.txt
 
-      - name: Configurar JDK 21 (Temurin)
+      - name: Configurar JDK 17 (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
-          java-version: 21
+          java-version: 17
           cache: gradle
 
       - name: Configurar Android SDK
         uses: android-actions/setup-android@v3
+
+      - name: Substituir jvmToolchain para usar Temurin 17
+        run: |
+          # O projeto define jvmToolchain(17) no app/build.gradle.kts
+          # O Gradle 9.x tenta resolver isso via foojay (JetBrains) e falha com 400.
+          # Substituímos por um bloco explícito sem vendor para usar o JDK já instalado.
+          sed -i 's/jvmToolchain(\(.*\))/jvmToolchain { languageVersion = JavaLanguageVersion.of(\1) }/g' dantotsu/app/build.gradle.kts
+          echo "=== Resultado do patch ==="
+          grep -n "jvmToolchain" dantotsu/app/build.gradle.kts
 
       - name: Adicionar configuração de Split APK
         run: |
