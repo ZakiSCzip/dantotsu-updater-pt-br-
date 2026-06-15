@@ -108,14 +108,10 @@ jobs:
             echo "$COMMIT_LOGS"
           } > changelog.txt
 
-      - name: Corrigir toolchain do Kotlin (vendor JetBrains → Adoptium)
+      - name: Corrigir toolchain do Kotlin
         run: |
-          sed -i '/^kotlin {/a\
-          \    jvmToolchain {\
-          \        languageVersion.set(JavaLanguageVersion.of(21))\
-          \        vendor.set(JvmVendorSpec.ADOPTIUM)\
-          \    }' dantotsu/app/build.gradle.kts
-          sed -i '/jvmToolchain(17)/d' dantotsu/app/build.gradle.kts
+          sed -i '/jvmToolchain/d' dantotsu/app/build.gradle.kts
+          echo "org.gradle.java.installations.auto-download=false" >> dantotsu/gradle.properties
 
 
       - name: Configurar JDK 21
