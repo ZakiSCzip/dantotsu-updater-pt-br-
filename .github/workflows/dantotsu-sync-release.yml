@@ -111,22 +111,22 @@ jobs:
       - name: Corrigir toolchain do Kotlin
         run: |
           python3 -c "
-import re
-with open('dantotsu/app/build.gradle.kts') as f:
-    c = f.read()
-old = '''kotlin {
-    jvmToolchain(17)
-    compilerOptions'''
-new = '''kotlin {
-    jvmToolchain {
-        languageVersion.set(JavaLanguageVersion.of(21))
-        vendor.set(JvmVendorSpec.ADOPTIUM)
-    }
-    compilerOptions'''
-c = c.replace(old, new)
-with open('dantotsu/app/build.gradle.kts', 'w') as f:
-    f.write(c)
-"
+          import re
+          with open('dantotsu/app/build.gradle.kts') as f:
+              c = f.read()
+          old = '''kotlin {
+              jvmToolchain(17)
+              compilerOptions'''
+          new = '''kotlin {
+              jvmToolchain {
+                  languageVersion.set(JavaLanguageVersion.of(21))
+                  vendor.set(JvmVendorSpec.ADOPTIUM)
+              }
+              compilerOptions'''
+          c = c.replace(old, new)
+          with open('dantotsu/app/build.gradle.kts', 'w') as f:
+              f.write(c)
+          "
           echo "org.gradle.java.installations.auto-download=false" >> dantotsu/gradle.properties
 
 
