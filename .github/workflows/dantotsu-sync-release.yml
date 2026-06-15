@@ -79,6 +79,14 @@ jobs:
           git clone --branch "$MIRROR_BRANCH" "$MIRROR_REPO" dantotsu
           git -C dantotsu fetch --unshallow 2>/dev/null || true
 
+      - name: DEBUG - Encontrar referência JetBrains
+        run: |
+          echo "=== Arquivos com JetBrains ==="
+          grep -rn "JetBrains\|JETBRAINS\|jvmToolchain\|javaToolchains\|toolchain" dantotsu --include="*.kts" --include="*.gradle" -l || echo "Nenhum arquivo encontrado"
+          echo ""
+          echo "=== Linhas exatas ==="
+          grep -rn "JetBrains\|JETBRAINS\|jvmToolchain\|javaToolchains\|toolchain" dantotsu --include="*.kts" --include="*.gradle" || echo "Nenhuma linha encontrada"
+
       - name: Aplicar tradução pt-BR
         run: python3 scripts/apply_translation.py dantotsu
 
@@ -112,33 +120,6 @@ jobs:
 
       - name: Configurar Android SDK
         uses: android-actions/setup-android@v3
-
-      - name: Remover exigência de vendor JetBrains do build.gradle.kts
-        run: |
-          # O projeto exige vendor=JetBrains no jvmToolchain, mas o runner só tem Temurin.
-          # Este patch substitui o bloco de vendor por languageVersion puro (sem vendor),
-          # o que faz o Gradle aceitar qualquer JDK 21 disponível no sistema.
-          GRADLE_FILE="dantotsu/build.gradle.kts"
-          if [ -f "$GRADLE_FILE" ]; then
-            echo "Patcheando $GRADLE_FILE..."
-            # Remove linhas com vendor=JetBrains dentro de jvmToolchain
-            sed -i '/vendor.*JetBrains\|JvmVendorSpec\.JETBRAINS/d' "$GRADLE_FILE"
-            echo "Patch aplicado:"
-            grep -n "jvmToolchain\|vendor\|languageVersion" "$GRADLE_FILE" || true
-          fi
-          # Verifica também o app/build.gradle.kts
-          APP_GRADLE="dantotsu/app/build.gradle.kts"
-          if [ -f "$APP_GRADLE" ]; then
-            echo "Patcheando $APP_GRADLE..."
-            sed -i '/vendor.*JetBrains\|JvmVendorSpec\.JETBRAINS/d' "$APP_GRADLE"
-          fi
-          # Busca em todos os build.gradle.kts do projeto por segurança
-          find dantotsu -name "build.gradle.kts" | while read f; do
-            if grep -q "JetBrains\|JETBRAINS" "$f" 2>/dev/null; then
-              echo "Patcheando $f..."
-              sed -i '/vendor.*JetBrains\|JvmVendorSpec\.JETBRAINS/d' "$f"
-            fi
-          done
 
       - name: Adicionar configuração de Split APK
         run: |
