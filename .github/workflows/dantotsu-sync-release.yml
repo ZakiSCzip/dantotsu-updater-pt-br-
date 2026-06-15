@@ -13,15 +13,12 @@ on:
   workflow_dispatch:
 
 env:
-  # Espelho PÚBLICO do Dantotsu oficial (rebelonion/Dantotsu, branch dev).
-  # É atualizado de hora em hora a partir do Forgejo oficial.
-  # Troque por outro espelho/branch aqui se necessário.
   MIRROR_REPO: "https://github.com/itsmechinmoy/Dantotsu.git"
   MIRROR_BRANCH: "main"
-  # Repositório oficial (apenas para os links do changelog).
   UPSTREAM_WEB: "https://git.rebelonion.dev/rebelonion/Dantotsu"
-  # Flavor sem Firebase/Google Services.
   BUILD_FLAVOR: "fdroid"
+  # Força Node.js 24 nas actions (evita warning de deprecação do Node 20)
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   check-updates:
@@ -81,7 +78,6 @@ jobs:
       - name: Clonar o espelho público do Dantotsu
         run: |
           git clone --branch "$MIRROR_BRANCH" "$MIRROR_REPO" dantotsu
-          # garante histórico suficiente para o changelog
           git -C dantotsu fetch --unshallow 2>/dev/null || true
 
       - name: Aplicar tradução pt-BR
@@ -108,15 +104,27 @@ jobs:
             echo "$COMMIT_LOGS"
           } > changelog.txt
 
-      - name: Configurar JDK 17
+      - name: Configurar JDK 21 (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
-          java-version: 17
+          java-version: 21
           cache: gradle
 
       - name: Configurar Android SDK
         uses: android-actions/setup-android@v3
+
+      - name: Forçar uso do JDK atual no Gradle (ignorar vendor JetBrains)
+        run: |
+          # O projeto exige vendor=JetBrains, mas o runner só tem Temurin.
+          # Registramos o JDK já instalado manualmente para o Gradle encontrá-lo.
+          mkdir -p ~/.gradle
+          echo "org.gradle.java.installations.paths=$JAVA_HOME" >> ~/.gradle/gradle.properties
+          echo "org.gradle.java.installations.auto-detect=false" >> ~/.gradle/gradle.properties
+          echo "org.gradle.java.installations.auto-provisioning=false" >> ~/.gradle/gradle.properties
+          # Sobrescreve o vendor exigido pelo projeto para aceitar qualquer vendor
+          mkdir -p dantotsu/.gradle
+          echo "org.gradle.java.installations.paths=$JAVA_HOME" >> dantotsu/.gradle/gradle.properties
 
       - name: Adicionar configuração de Split APK
         run: |
