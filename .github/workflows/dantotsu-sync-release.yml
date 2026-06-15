@@ -112,6 +112,7 @@ jobs:
         run: |
           python3 -c 'c=open("dantotsu/app/build.gradle.kts").read();c=c.replace("jvmToolchain(17)\n    compilerOptions","jvmToolchain {\n        languageVersion.set(JavaLanguageVersion.of(21))\n        vendor.set(JvmVendorSpec.ADOPTIUM)\n    }\n    compilerOptions");open("dantotsu/app/build.gradle.kts","w").write(c)'
           echo "org.gradle.java.installations.auto-download=false" >> dantotsu/gradle.properties
+          echo "org.gradle.java.installations.fromEnv=JAVA_HOME" >> dantotsu/gradle.properties
 
 
       - name: Configurar JDK 21
